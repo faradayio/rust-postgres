@@ -1,4 +1,5 @@
 use bytes::BytesMut;
+use log::trace;
 use postgres_protocol::message::backend;
 use std::io;
 use tokio_codec::{Decoder, Encoder};
@@ -10,6 +11,7 @@ impl Encoder for PostgresCodec {
     type Error = io::Error;
 
     fn encode(&mut self, item: Vec<u8>, dst: &mut BytesMut) -> Result<(), io::Error> {
+        trace!("sending {} bytes", item.len());
         dst.extend_from_slice(&item);
         Ok(())
     }

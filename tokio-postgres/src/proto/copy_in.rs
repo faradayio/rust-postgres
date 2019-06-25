@@ -1,7 +1,9 @@
 use bytes::{Buf, IntoBuf};
 use futures::sink;
 use futures::sync::mpsc;
+use futures::task;
 use futures::{try_ready, Async, AsyncSink, Future, Poll, Sink, Stream};
+use log::trace;
 use postgres_protocol::message::backend::Message;
 use postgres_protocol::message::frontend;
 use state_machine_future::{transition, RentToOwn, StateMachineFuture};
@@ -113,6 +115,7 @@ where
     S::Error: Into<Box<dyn StdError + Sync + Send>>,
 {
     fn poll_start<'a>(state: &'a mut RentToOwn<'a, Start<S>>) -> Poll<AfterStart<S>, Error> {
+        trace!("poll_start - ENTER");
         let state = state.take();
         let receiver = state.client.send(state.request)?;
 
@@ -127,12 +130,17 @@ where
     fn poll_read_copy_in_response<'a>(
         state: &'a mut RentToOwn<'a, ReadCopyInResponse<S>>,
     ) -> Poll<AfterReadCopyInResponse<S>, Error> {
+        trace!("poll_read_copy_in_response - ENTER");
         loop {
+        trace!("poll_read_copy_in_response - LOOP");
             let message = try_ready_receive!(state.receiver.poll());
 
             match message {
-                Some(Message::BindComplete) => {}
+                Some(Message::BindComplete) => {
+                    trace!("poll_write_copy_data - BindComplete");
+                }
                 Some(Message::CopyInResponse(_)) => {
+                    trace!("poll_write_copy_data - CopyInResponse");
                     let state = state.take();
                     transition!(WriteCopyData {
                         stream: state.stream,
@@ -152,14 +160,19 @@ where
     fn poll_write_copy_data<'a>(
         state: &'a mut RentToOwn<'a, WriteCopyData<S>>,
     ) -> Poll<AfterWriteCopyData, Error> {
+        trace!("poll_write_copy_data - ENTER");
         if let Some(message) = state.pending_message.take() {
+            trace!("poll_write_copy_data - found pending message");
             match state
                 .sender
                 .start_send(message)
                 .map_err(|_| Error::closed())?
             {
-                AsyncSink::Ready => {}
+                AsyncSink::Ready => {
+                    trace!("poll_write_copy_data - sent pending message");
+                }
                 AsyncSink::NotReady(message) => {
+                    trace!("poll_write_copy_data - could not sending pending message");
                     state.pending_message = Some(message);
                     return Ok(Async::NotReady);
                 }
@@ -167,9 +180,12 @@ where
         }
 
         loop {
+            trace!("poll_write_copy_data - LOOP");
             let done = loop {
+                trace!("poll_write_copy_data - BUFFER LOOP");
                 match try_ready!(state.stream.poll().map_err(Error::copy_in_stream)) {
                     Some(data) => {
+                        trace!("poll_write_copy_data - received data");
                         // FIXME avoid collect
                         frontend::copy_data(&data.into_buf().collect::<Vec<_>>(), &mut state.buf)
                             .map_err(Error::encode)?;
@@ -187,6 +203,7 @@ where
             };
 
             if done {
+                trace!("poll_write_copy_data - copy done");
                 let state = state.take();
                 transition!(WriteCopyDone {
                     future: state.sender.send(message),
@@ -199,8 +216,11 @@ where
                 .start_send(message)
                 .map_err(|_| Error::closed())?
             {
-                AsyncSink::Ready => {}
+                AsyncSink::Ready => {
+                    trace!("poll_write_copy_data - sent");
+                }
                 AsyncSink::NotReady(message) => {
+                    trace!("poll_write_copy_data - saving pending message");
                     state.pending_message = Some(message);
                     return Ok(Async::NotReady);
                 }
@@ -211,6 +231,7 @@ where
     fn poll_write_copy_done<'a>(
         state: &'a mut RentToOwn<'a, WriteCopyDone>,
     ) -> Poll<AfterWriteCopyDone, Error> {
+        trace!("poll_write_copy_done - ENTER");
         try_ready!(state.future.poll().map_err(|_| Error::closed()));
         let state = state.take();
 
@@ -222,10 +243,12 @@ where
     fn poll_read_command_complete<'a>(
         state: &'a mut RentToOwn<'a, ReadCommandComplete>,
     ) -> Poll<AfterReadCommandComplete, Error> {
+        trace!("poll_read_command_complete - ENTER");
         let message = try_ready_receive!(state.receiver.poll());
 
         match message {
             Some(Message::CommandComplete(body)) => {
+                trace!("poll_read_command_complete - CommandComplete");
                 let rows = body
                     .tag()
                     .map_err(Error::parse)?

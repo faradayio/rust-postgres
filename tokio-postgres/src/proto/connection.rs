@@ -75,6 +75,7 @@ where
     }
 
     fn poll_response(&mut self) -> Poll<Option<Message>, io::Error> {
+        trace!("poll_response ENTER");
         if let Some(message) = self.pending_response.take() {
             trace!("retrying pending response");
             return Ok(Async::Ready(Some(message)));
@@ -84,12 +85,14 @@ where
     }
 
     fn poll_read(&mut self) -> Result<Option<AsyncMessage>, Error> {
+        trace!("poll_read ENTER");
         if self.state != State::Active {
             trace!("poll_read: done");
             return Ok(None);
         }
 
         loop {
+            trace!("poll_read LOOP");
             let message = match self.poll_response().map_err(Error::io)? {
                 Async::Ready(Some(message)) => message,
                 Async::Ready(None) => {
@@ -156,6 +159,8 @@ where
     }
 
     fn poll_request(&mut self) -> Poll<Option<RequestMessages>, Error> {
+        trace!("poll_request ENTER");
+
         if let Some(message) = self.pending_request.take() {
             trace!("retrying pending request");
             return Ok(Async::Ready(Some(message)));
@@ -175,7 +180,10 @@ where
     }
 
     fn poll_write(&mut self) -> Result<bool, Error> {
+        trace!("poll_write ENTER");
+
         loop {
+            trace!("poll_write LOOP");
             if self.state == State::Closing {
                 trace!("poll_write: done");
                 return Ok(false);
@@ -213,7 +221,7 @@ where
                             }
                         }
                         AsyncSink::NotReady(request) => {
-                            trace!("poll_write: waiting on socket");
+                            trace!("poll_write: waiting on socket 1");
                             self.pending_request = Some(RequestMessages::Single(request));
                             return Ok(false);
                         }
@@ -251,7 +259,7 @@ where
                             });
                         }
                         AsyncSink::NotReady(message) => {
-                            trace!("poll_write: waiting on socket");
+                            trace!("poll_write: waiting on socket 2");
                             self.pending_request = Some(RequestMessages::CopyIn {
                                 receiver,
                                 pending_message: Some(message),
@@ -265,6 +273,7 @@ where
     }
 
     fn poll_flush(&mut self) -> Result<(), Error> {
+        trace!("poll_flush ENTER");
         match self.stream.poll_complete().map_err(Error::io)? {
             Async::Ready(()) => trace!("poll_flush: flushed"),
             Async::NotReady => trace!("poll_flush: waiting on socket"),
@@ -273,7 +282,9 @@ where
     }
 
     fn poll_shutdown(&mut self) -> Poll<(), Error> {
+        trace!("poll_shutdown ENTER");
         if self.state != State::Closing {
+            trace!("poll_shutdown: not ready, not closing {:?}", self.state);
             return Ok(Async::NotReady);
         }
 
@@ -290,13 +301,17 @@ where
     }
 
     pub fn poll_message(&mut self) -> Poll<Option<AsyncMessage>, Error> {
+        trace!("poll_message ENTER");
         let message = self.poll_read()?;
         let want_flush = self.poll_write()?;
         if want_flush {
             self.poll_flush()?;
         }
         match message {
-            Some(message) => Ok(Async::Ready(Some(message))),
+            Some(message) => {
+                trace!("poll_message: got message");
+                Ok(Async::Ready(Some(message)))
+            }
             None => self.poll_shutdown().map(|r| r.map(|()| None)),
         }
     }
@@ -310,6 +325,7 @@ where
     type Error = Error;
 
     fn poll(&mut self) -> Poll<(), Error> {
+        trace!("poll ENTER");
         while let Some(_) = try_ready!(self.poll_message()) {}
         Ok(Async::Ready(()))
     }
